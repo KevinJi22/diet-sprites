@@ -41,9 +41,6 @@ func DefaultConfig(host string) Config {
 // Backoff calculates the wait duration before retry number `attempt` (0-indexed).
 // Must satisfy: non-negative, grows with attempt number, capped at cfg.MaxBackoff.
 func Backoff(attempt int, cfg Config) time.Duration {
-	// TODO(human): Implement exponential backoff with jitter.
-	// Available: cfg.InitialBackoff, cfg.MaxBackoff, attempt
-	// Return how long to wait before the next retry.
 	if attempt == 0 {
 		return cfg.InitialBackoff
 	}
