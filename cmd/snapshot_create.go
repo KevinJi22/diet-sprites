@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 	"github.com/kevin/diet_sprites/internal/config"
@@ -51,7 +52,15 @@ Examples:
 			if err := client.Action.WaitFor(ctx, action); err != nil {
 				return fmt.Errorf("shutdown action failed for server %q: %w", name, err)
 			}
+		}
 
+		// waitFor just waits until the shutdown signal has been sent, we need to wait until the server has fully been shutdown
+		for {
+			server, _, err = client.Server.GetByID(ctx, server.ID)
+			if server.Status == hcloud.ServerStatusOff {
+				break
+			}
+			time.Sleep(2 * time.Second)
 		}
 
 		fmt.Println("Creating snapshot...")
