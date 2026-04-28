@@ -54,13 +54,18 @@ Examples:
 			}
 		}
 
-		// waitFor just waits until the shutdown signal has been sent, we need to wait until the server has fully been shutdown
-		for {
-			server, _, err = client.Server.GetByID(ctx, server.ID)
-			if server.Status == hcloud.ServerStatusOff {
-				break
+		if snapshotCreateFlags.powerOff {
+			// WaitFor only confirms the shutdown signal was accepted; poll until the OS has halted.
+			for {
+				server, _, err = client.Server.GetByID(ctx, server.ID)
+				if err != nil {
+					return fmt.Errorf("polling server status: %w", err)
+				}
+				if server.Status == hcloud.ServerStatusOff {
+					break
+				}
+				time.Sleep(2 * time.Second)
 			}
-			time.Sleep(2 * time.Second)
 		}
 
 		fmt.Println("Creating snapshot...")

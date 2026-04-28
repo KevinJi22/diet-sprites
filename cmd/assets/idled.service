@@ -1,0 +1,18 @@
+# The idled binary is at /usr/local/bin/idled.
+# It reads /proc/stat and /proc/net/dev, waits 2m on start, then polls every 30s.
+# When idle for 5 consecutive minutes it calls `poweroff`.
+
+[Unit]
+Description=A binary for checking if a server is idle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=5
+ExecStart=/usr/local/bin/idled
+User=root
+
+[Install]
+WantedBy=multi-user.target
