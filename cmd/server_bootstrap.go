@@ -47,8 +47,6 @@ Example:
 		ip := server.PublicNet.IPv4.IP.String()
 
 		fmt.Println("Installing containerd and gVisor...")
-		// TODO(human): write the shell script that installs containerd + gVisor
-		// and wires runsc into /etc/containerd/config.toml.
 		installScript := `
 			apt-get update && \
 			apt-get install -y containerd && \
@@ -66,7 +64,8 @@ Example:
 			EOF
 			systemctl restart containerd && \
 			ctr image pull docker.io/library/python:3.11-slim && \
-			ctr image pull docker.io/library/node:20-slim
+			ctr image pull docker.io/library/node:20-slim && \
+			ctr image pull docker.io/library/golang:1.22-alpine
 		`
 		if err := sshRun(ip, bootstrapFlags.user, bootstrapFlags.identity, installScript); err != nil {
 			return fmt.Errorf("installing containerd/gVisor: %w", err)
