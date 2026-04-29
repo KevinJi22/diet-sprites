@@ -14,6 +14,9 @@ import (
 //go:embed assets/idled.service
 var idledServiceUnit []byte
 
+//go:embed assets/runner.service
+var runnerServiceUnit []byte
+
 var bootstrapFlags struct {
 	identity string
 	user     string
@@ -104,6 +107,35 @@ Example:
 		if err := sshRun(ip, bootstrapFlags.user, bootstrapFlags.identity,
 			"chmod +x /usr/local/bin/idled && systemctl daemon-reload && systemctl enable --now idled"); err != nil {
 			return fmt.Errorf("enabling service: %w", err)
+		}
+
+		fmt.Printf("Building runner (linux/%s)...\n", bootstrapFlags.arch)
+		runnerBinaryPath := filepath.Join(tmp, "runner")
+		runnerBuildCmd := exec.Command("go", "build", "-o", runnerBinaryPath, "./cmd/runner")
+		runnerBuildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+bootstrapFlags.arch, "CGO_ENABLED=0")
+		runnerBuildCmd.Stdout = os.Stdout
+		runnerBuildCmd.Stderr = os.Stderr
+		if err := runnerBuildCmd.Run(); err != nil {
+			return fmt.Errorf("building runner: %w", err)
+		}
+
+		runnerUnitPath := filepath.Join(tmp, "runner.service")
+		if err := os.WriteFile(runnerUnitPath, runnerServiceUnit, 0644); err != nil {
+			return fmt.Errorf("writing runner unit file: %w", err)
+		}
+
+		fmt.Printf("Copying runner to %s (%s)...\n", name, ip)
+		if err := scpFile(ip, bootstrapFlags.user, bootstrapFlags.identity, runnerBinaryPath, "/usr/local/bin/runner"); err != nil {
+			return fmt.Errorf("copying runner binary: %w", err)
+		}
+		if err := scpFile(ip, bootstrapFlags.user, bootstrapFlags.identity, runnerUnitPath, "/etc/systemd/system/runner.service"); err != nil {
+			return fmt.Errorf("copying runner unit file: %w", err)
+		}
+
+		fmt.Println("Enabling runner service (will start once RUNNER_TOKEN is set)...")
+		if err := sshRun(ip, bootstrapFlags.user, bootstrapFlags.identity,
+			"chmod +x /usr/local/bin/runner && systemctl daemon-reload && systemctl enable runner"); err != nil {
+			return fmt.Errorf("enabling runner service: %w", err)
 		}
 
 		fmt.Printf("Bootstrap complete on %s\n", name)

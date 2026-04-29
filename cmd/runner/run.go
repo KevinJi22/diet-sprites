@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +23,9 @@ const (
 	memoryLimit    = uint64(512 * 1024 * 1024)
 	cpuQuota       = int64(100_000)  // microseconds of CPU per period
 	cpuPeriod      = uint64(100_000) // 100ms window — quota/period = fraction of 1 CPU
-	gvisorRuntime  = "io.containerd.runsc.v1"
+	gvisorRuntime   = "io.containerd.runsc.v1"
+	runcRuntime     = "io.containerd.runc.v2"
+	benchmarkWarmup = 2
 	containerdSock = "/run/containerd/containerd.sock"
 	ctrNamespace   = "runner"
 )
@@ -74,7 +78,7 @@ func (r RunRequest) validate() error {
 	return nil
 }
 
-func execute(ctx context.Context, req RunRequest) (*RunResult, error) {
+func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, error) {
 	spec, ok := languages[req.Language]
 	if !ok {
 		return nil, fmt.Errorf("language is not supported: %s", req.Language)
@@ -107,7 +111,7 @@ func execute(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 
 	container, err := ctrClient.NewContainer(ctx, id,
-		containerd.WithRuntime(gvisorRuntime, nil),
+		containerd.WithRuntime(runtime, nil),
 		containerd.WithNewSnapshot(id, image),
 		containerd.WithNewSpec(specOpts...),
 	)
@@ -149,6 +153,93 @@ func execute(ctx context.Context, req RunRequest) (*RunResult, error) {
 		DurationMS: elapsed.Milliseconds(),
 		TimedOut:   timedOut,
 	}, nil
+}
+
+// benchmarkCode is a tiny program per language: enough to exercise startup + one print.
+var benchmarkCode = map[string]string{
+	"python": `import sys; print("ok")`,
+	"node":   `console.log("ok")`,
+	"go": `package main
+import "fmt"
+func main() { fmt.Println("ok") }`,
+}
+
+type runtimeStats struct {
+	Samples int
+	MinMS   int64
+	MeanMS  int64
+	MaxMS   int64
+	P99MS   int64
+}
+
+type langResult struct {
+	Language string
+	Runc     runtimeStats
+	Gvisor   runtimeStats
+}
+
+type BenchmarkReport struct {
+	Iterations int
+	Results    []langResult
+}
+
+func mean(samples []int64) float64 {
+	if len(samples) == 0 {
+		return 0.0
+	}
+	sum := int64(0)
+
+	for _, val := range samples {
+		sum += val
+	}
+
+	return float64(sum) / float64(len(samples))
+}
+
+func benchmark(ctx context.Context, iterations int) (*BenchmarkReport, error) {
+	report := &BenchmarkReport{Iterations: iterations}
+	for language, program := range benchmarkCode {
+		langResult := langResult{Language: language}
+		req := RunRequest{Language: language, Code: program}
+		for _, runtime := range []string{runcRuntime, gvisorRuntime} {
+			for range benchmarkWarmup {
+				_, _ = execute(ctx, req, runtime)
+			}
+
+			samples := make([]int64, 0, iterations)
+			for i := range iterations {
+				result, err := execute(ctx, req, runtime)
+				if err != nil {
+					fmt.Printf("failed to execute code on iteration %d, skipping\n", i)
+					continue
+				}
+				samples = append(samples, result.DurationMS)
+			}
+
+			if len(samples) == 0 {
+				continue
+			}
+			slices.Sort(samples)
+			stats := runtimeStats{
+				Samples: len(samples),
+				MinMS:   samples[0],
+				MeanMS:  int64(mean(samples)),
+				MaxMS:   samples[len(samples)-1],
+				P99MS:   samples[len(samples)*99/100],
+			}
+			switch runtime {
+			case runcRuntime:
+				langResult.Runc = stats
+			case gvisorRuntime:
+				langResult.Gvisor = stats
+			}
+		}
+		report.Results = append(report.Results, langResult)
+	}
+	slices.SortFunc(report.Results, func(a, b langResult) int {
+		return strings.Compare(a.Language, b.Language)
+	})
+	return report, nil
 }
 
 func buildSpec(req RunRequest, image containerd.Image, codeFile string) ([]oci.SpecOpts, error) {

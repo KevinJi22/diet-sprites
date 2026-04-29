@@ -12,12 +12,15 @@ import (
 )
 
 var createFlags struct {
-	name       string
-	serverType string
-	image      string
-	location   string
-	sshKey     string
-	wait       bool
+	name        string
+	serverType  string
+	image       string
+	location    string
+	sshKey      string
+	wait        bool
+	runnerToken string
+	identity    string
+	user        string
 }
 
 var serverCreateCmd = &cobra.Command{
@@ -39,6 +42,10 @@ Examples:
 Server types: cx23, cx33, cx43, cx53 (shared Intel); cax11, cax21, ... (shared ARM)
 Locations:    nbg1 (Nuremberg), fsn1 (Falkenstein), hel1 (Helsinki), ash (Ashburn), hil (Hillsboro)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if createFlags.runnerToken != "" && !createFlags.wait {
+			return fmt.Errorf("--runner-token requires --wait")
+		}
+
 		ctx := context.Background()
 
 		// Resolve image: explicit --image > default snapshot in config > ubuntu-24.04.
@@ -108,6 +115,22 @@ Locations:    nbg1 (Nuremberg), fsn1 (Falkenstein), hel1 (Helsinki), ash (Ashbur
 			if probeErr != nil {
 				return fmt.Errorf("SSH probe: %w", probeErr)
 			}
+
+			if createFlags.runnerToken != "" {
+				if createFlags.identity == "" {
+					return fmt.Errorf("--runner-token requires --identity")
+				}
+				fmt.Println("Writing runner token and starting service...")
+				dropIn := fmt.Sprintf("[Service]\nEnvironment=RUNNER_TOKEN=%s\n", createFlags.runnerToken)
+				writeDropIn := fmt.Sprintf(
+					`mkdir -p /etc/systemd/system/runner.service.d && printf %%s %q > /etc/systemd/system/runner.service.d/token.conf && systemctl daemon-reload && systemctl start runner`,
+					dropIn,
+				)
+				if err := sshRun(ip, createFlags.user, createFlags.identity, writeDropIn); err != nil {
+					return fmt.Errorf("starting runner: %w", err)
+				}
+				fmt.Printf("Runner listening on http://%s:8080\n", ip)
+			}
 		}
 
 		return nil
@@ -123,6 +146,9 @@ func init() {
 	serverCreateCmd.Flags().StringVarP(&createFlags.location, "location", "l", "nbg1", "Datacenter location (e.g. nbg1, fsn1, hel1)")
 	serverCreateCmd.Flags().StringVarP(&createFlags.sshKey, "ssh-key", "k", "", "SSH key name to inject")
 	serverCreateCmd.Flags().BoolVarP(&createFlags.wait, "wait", "w", false, "Wait for SSH to become ready")
+	serverCreateCmd.Flags().StringVar(&createFlags.runnerToken, "runner-token", "", "Secret token for the runner HTTP API (requires --wait and --identity)")
+	serverCreateCmd.Flags().StringVar(&createFlags.identity, "identity", "", "SSH private key path (required with --runner-token)")
+	serverCreateCmd.Flags().StringVarP(&createFlags.user, "user", "u", "root", "SSH login user")
 
 	_ = serverCreateCmd.MarkFlagRequired("name")
 }

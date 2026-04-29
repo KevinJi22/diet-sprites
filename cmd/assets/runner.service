@@ -1,0 +1,26 @@
+# The runner binary is at /usr/local/bin/runner.
+# It connects to containerd on demand (first /run request), so it starts cleanly
+# even if containerd is briefly slow after boot.
+
+[Unit]
+Description=Code runner HTTP service
+After=containerd.service
+Wants=containerd.service
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=5
+ExecStart=/usr/local/bin/runner
+Environment=RUNNER_PORT=8080
+# RUNNER_TOKEN must be set — the runner will refuse to start without it.
+# Inject it by creating /etc/systemd/system/runner.service.d/token.conf with:
+#
+#   [Service]
+#   Environment=RUNNER_TOKEN=<secret>
+#
+# sandbox server create --runner-token <secret> does this automatically.
+User=root
+
+[Install]
+WantedBy=multi-user.target

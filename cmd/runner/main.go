@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/containerd/containerd"
 )
@@ -20,11 +22,17 @@ func main() {
 	}
 	defer ctrClient.Close()
 
+	token := os.Getenv("RUNNER_TOKEN")
+	if token == "" {
+		log.Fatal("RUNNER_TOKEN environment variable must be set")
+	}
+
 	port := os.Getenv("RUNNER_PORT")
 	if port == "" {
 		port = "8080"
 	}
-	http.HandleFunc("/run", handleRun)
+	http.HandleFunc("/run", requireToken(token, handleRun))
+	http.HandleFunc("/benchmark", requireToken(token, handleBenchmark))
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -32,6 +40,38 @@ func main() {
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func requireToken(token string, next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		bearerToken, ok := strings.CutPrefix(auth, "Bearer ")
+		if !ok || bearerToken != token {
+			http.Error(w, "Unauthorized: incorrect token", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func handleBenchmark(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	iterations := 5
+	if s := r.URL.Query().Get("n"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 50 {
+			iterations = n
+		}
+	}
+	report, err := benchmark(r.Context(), iterations)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("benchmark error: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
 }
 
 func handleRun(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +89,7 @@ func handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := execute(r.Context(), req)
+	result, err := execute(r.Context(), req, gvisorRuntime)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("execution error: %v", err), http.StatusInternalServerError)
 		return
