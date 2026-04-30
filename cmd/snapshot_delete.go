@@ -12,6 +12,10 @@ import (
 var snapshotDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a snapshot by ID",
+	Long: `Delete a snapshot by its numeric ID. Use "sandbox snapshot list" to find IDs.
+
+If the deleted snapshot was set as the default boot image, the default is cleared
+and future "server create" will fall back to ubuntu-24.04.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()

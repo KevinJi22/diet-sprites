@@ -18,16 +18,16 @@ import (
 )
 
 const (
-	execTimeout    = 10 * time.Second
-	maxCodeBytes   = 64 * 1024
-	memoryLimit    = uint64(512 * 1024 * 1024)
-	cpuQuota       = int64(100_000)  // microseconds of CPU per period
-	cpuPeriod      = uint64(100_000) // 100ms window — quota/period = fraction of 1 CPU
+	execTimeout     = 10 * time.Second
+	maxCodeBytes    = 64 * 1024
+	memoryLimit     = uint64(512 * 1024 * 1024)
+	cpuQuota        = int64(100_000)  // microseconds of CPU per period
+	cpuPeriod       = uint64(100_000) // 100ms window — quota/period = fraction of 1 CPU
 	gvisorRuntime   = "io.containerd.runsc.v1"
 	runcRuntime     = "io.containerd.runc.v2"
 	benchmarkWarmup = 2
-	containerdSock = "/run/containerd/containerd.sock"
-	ctrNamespace   = "runner"
+	containerdSock  = "/run/containerd/containerd.sock"
+	ctrNamespace    = "runner"
 )
 
 type RunRequest struct {
@@ -35,10 +35,19 @@ type RunRequest struct {
 	Code     string `json:"code"`
 }
 
+type Spans struct {
+	ImageLookupMS     int64 `json:"image_lookup_ms"`
+	ContainerCreateMS int64 `json:"container_create_ms"`
+	TaskCreateMS      int64 `json:"task_create_ms"`
+	TaskStartMS       int64 `json:"task_start_ms"`
+	ExecMS            int64 `json:"exec_ms"`
+}
+
 type RunResult struct {
 	Output     string `json:"output"`
 	DurationMS int64  `json:"duration_ms"`
 	TimedOut   bool   `json:"timed_out,omitempty"`
+	Spans      *Spans `json:"spans,omitempty"`
 }
 
 type langSpec struct {
@@ -98,7 +107,23 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 	defer cancel()
 	ctx = namespaces.WithNamespace(ctx, ctrNamespace)
 
+	// TODO(human): Add per-stage timing here. Fill in a *Spans and return it with the result.
+	//
+	// The five stages to measure (record time.Now() before and after each call):
+	//   image_lookup_ms     — ctrClient.GetImage(...)
+	//   container_create_ms — ctrClient.NewContainer(...)
+	//   task_create_ms      — container.NewTask(...)
+	//   task_start_ms       — task.Start(ctx) call only (not the exec wait)
+	//   exec_ms             — task.Start(ctx) through exit (already in elapsed below — split it out)
+	//
+	// Hint: the simplest approach is t0 := time.Now() before each call, then
+	// ms := time.Since(t0).Milliseconds() after it. Reset t0 between stages.
+	// Decide what to do when a stage errors — partial spans or nil?
+	var spans = &Spans{}
+
+	start := time.Now()
 	image, err := ctrClient.GetImage(ctx, spec.image)
+	spans.ImageLookupMS = time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("image %q not found (pull it first): %w", spec.image, err)
 	}
@@ -110,18 +135,22 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 		return nil, fmt.Errorf("failed to build spec: %w", err)
 	}
 
+	start = time.Now()
 	container, err := ctrClient.NewContainer(ctx, id,
 		containerd.WithRuntime(runtime, nil),
 		containerd.WithNewSnapshot(id, image),
 		containerd.WithNewSpec(specOpts...),
 	)
+	spans.ContainerCreateMS = time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("creating container: %w", err)
 	}
 	defer container.Delete(context.Background(), containerd.WithSnapshotCleanup)
 
 	var buf bytes.Buffer
+	start = time.Now()
 	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(nil, &buf, &buf)))
+	spans.TaskCreateMS = time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("creating task: %w", err)
 	}
@@ -133,10 +162,13 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 		return nil, fmt.Errorf("registering wait: %w", err)
 	}
 
-	start := time.Now()
-	if err := task.Start(ctx); err != nil {
+	start = time.Now()
+	err = task.Start(ctx)
+	spans.TaskStartMS = time.Since(start).Milliseconds()
+	if err != nil {
 		return nil, fmt.Errorf("starting task: %w", err)
 	}
+	execStart := time.Now()
 
 	timedOut := false
 	select {
@@ -146,12 +178,14 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 		_ = task.Kill(context.Background(), syscall.SIGKILL)
 		<-exitCh
 	}
-	elapsed := time.Since(start)
+	elapsed := time.Since(execStart)
+	spans.ExecMS = elapsed.Milliseconds()
 
 	return &RunResult{
 		Output:     buf.String(),
 		DurationMS: elapsed.Milliseconds(),
 		TimedOut:   timedOut,
+		Spans:      spans,
 	}, nil
 }
 

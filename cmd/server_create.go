@@ -28,13 +28,18 @@ var serverCreateCmd = &cobra.Command{
 	Short: "Create a new server",
 	Long: `Create a new Hetzner cloud server and wait for it to start.
 
+Without a default snapshot set, boots ubuntu-24.04. Once you've built a golden
+image with "server bootstrap" and "snapshot create --set-default", it boots that
+instead — containerd, gVisor, and the runner are already installed.
+
 Examples:
 
-  # Minimal (uses defaults: cx23, ubuntu-24.04, nbg1)
-  sandbox server create --name my-box
+  # Boot from golden snapshot and start the runner in one step
+  sandbox server create --name my-runner --ssh-key my-key --wait \
+    --identity ~/.ssh/id_ed25519 --runner-token $(openssl rand -hex 16)
 
-  # With SSH key so you can log in
-  sandbox server create --name my-box --ssh-key my-key
+  # Boot a raw Ubuntu server for initial golden image setup
+  sandbox server create --name setup-box --image ubuntu-24.04 --ssh-key my-key --wait
 
   # Custom type and location
   sandbox server create --name my-box --type cx32 --location fsn1 --ssh-key my-key

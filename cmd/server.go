@@ -5,21 +5,22 @@ import "github.com/spf13/cobra"
 var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Manage servers",
-	Long: `Create and delete Hetzner cloud servers.
+	Long: `Create and manage Hetzner cloud servers.
 
-Typical workflow:
+First-time setup — build the golden image (run once):
 
-  # 1. Upload your SSH key once
-  sandbox key upload --name my-key
+  sandbox server create --name setup-box --image ubuntu-24.04 --ssh-key my-key --wait
+  sandbox server bootstrap setup-box --identity ~/.ssh/id_ed25519
+  sandbox snapshot create setup-box --power-off --set-default
+  sandbox server delete setup-box
 
-  # 2. Create a server
-  sandbox server create --name my-box --ssh-key my-key
+Spin up a runner from the golden image:
 
-  # 3. SSH in
-  ssh root@<ip shown after create>
+  sandbox server create --name my-runner --ssh-key my-key --wait \
+    --identity ~/.ssh/id_ed25519 --runner-token <secret>
 
-  # 4. Destroy when done
-  sandbox server delete my-box`,
+The runner is then live at http://<ip>:8080/run. The server auto-powers-off
+after 5 minutes idle (idled daemon, baked into the golden image).`,
 }
 
 func init() {
