@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,17 +15,46 @@ import (
 	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
+	runcoptions "github.com/containerd/containerd/runtime/v2/runc/options"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
+// safeBuffer is a bytes.Buffer safe for concurrent writes from containerd's
+// stdout and stderr IO goroutines.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 const (
+	setupTimeout    = 60 * time.Second
 	execTimeout     = 10 * time.Second
 	maxCodeBytes    = 64 * 1024
 	memoryLimit     = uint64(512 * 1024 * 1024)
 	cpuQuota        = int64(100_000)  // microseconds of CPU per period
 	cpuPeriod       = uint64(100_000) // 100ms window — quota/period = fraction of 1 CPU
-	gvisorRuntime   = "io.containerd.runsc.v1"
-	runcRuntime     = "io.containerd.runc.v2"
+	// Internal labels — resolved to (containerd runtime, shim options) by
+	// resolveRuntime. Both labels currently map to the runc.v2 shim; gVisor is
+	// selected by passing the runsc binary path through the shim's options.
+	// The native io.containerd.runsc.v1 shim deadlocks against containerd 2.x
+	// (TTRPC API drift), so we route through the runc shim which containerd is
+	// built and tested against.
+	gvisorRuntime = "gvisor"
+	runcRuntime   = "runc"
+	runscBinary   = "/usr/bin/runsc"
+	shimRuntime   = "io.containerd.runc.v2"
 	benchmarkWarmup = 2
 	containerdSock  = "/run/containerd/containerd.sock"
 	ctrNamespace    = "runner"
@@ -103,9 +133,9 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 	}
 	f.Close()
 
-	ctx, cancel := context.WithTimeout(ctx, execTimeout)
-	defer cancel()
-	ctx = namespaces.WithNamespace(ctx, ctrNamespace)
+	setupCtx, setupCancel := context.WithTimeout(ctx, setupTimeout)
+	defer setupCancel()
+	setupCtx = namespaces.WithNamespace(setupCtx, ctrNamespace)
 
 	// TODO(human): Add per-stage timing here. Fill in a *Spans and return it with the result.
 	//
@@ -121,8 +151,13 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 	// Decide what to do when a stage errors — partial spans or nil?
 	var spans = &Spans{}
 
+	ctrClient, err := getContainerdClient()
+	if err != nil {
+		return nil, fmt.Errorf("connecting to containerd: %w", err)
+	}
+
 	start := time.Now()
-	image, err := ctrClient.GetImage(ctx, spec.image)
+	image, err := ctrClient.GetImage(setupCtx, spec.image)
 	spans.ImageLookupMS = time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("image %q not found (pull it first): %w", spec.image, err)
@@ -135,9 +170,14 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 		return nil, fmt.Errorf("failed to build spec: %w", err)
 	}
 
+	var shimOpts *runcoptions.Options
+	if runtime == gvisorRuntime {
+		shimOpts = &runcoptions.Options{BinaryName: runscBinary}
+	}
+
 	start = time.Now()
-	container, err := ctrClient.NewContainer(ctx, id,
-		containerd.WithRuntime(runtime, nil),
+	container, err := ctrClient.NewContainer(setupCtx, id,
+		containerd.WithRuntime(shimRuntime, shimOpts),
 		containerd.WithNewSnapshot(id, image),
 		containerd.WithNewSpec(specOpts...),
 	)
@@ -147,9 +187,24 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 	}
 	defer container.Delete(context.Background(), containerd.WithSnapshotCleanup)
 
-	var buf bytes.Buffer
+	var buf safeBuffer
+
+	// Capture the cio.IO so we can call Wait() after process exit. exitCh fires
+	// when the process exits (write end of FIFOs closes), but the containerd IO
+	// goroutines that drain those FIFOs into buf may still be running. Wait()
+	// blocks until they finish, preventing a race between reading buf and the drain.
+	var taskIO cio.IO
+	ioCreator := func(id string) (cio.IO, error) {
+		io, err := cio.NewCreator(cio.WithStreams(nil, &buf, &buf))(id)
+		if err != nil {
+			return nil, err
+		}
+		taskIO = io
+		return io, nil
+	}
+
 	start = time.Now()
-	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(nil, &buf, &buf)))
+	task, err := container.NewTask(setupCtx, ioCreator)
 	spans.TaskCreateMS = time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("creating task: %w", err)
@@ -163,23 +218,32 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 	}
 
 	start = time.Now()
-	err = task.Start(ctx)
+	err = task.Start(setupCtx)
 	spans.TaskStartMS = time.Since(start).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("starting task: %w", err)
 	}
 	execStart := time.Now()
 
+	// Switch to a fresh exec-only deadline so user code gets the full window.
+	execCtx, execCancel := context.WithTimeout(context.Background(), execTimeout)
+	defer execCancel()
+
 	timedOut := false
 	select {
 	case <-exitCh:
-	case <-ctx.Done():
+	case <-execCtx.Done():
 		timedOut = true
 		_ = task.Kill(context.Background(), syscall.SIGKILL)
 		<-exitCh
 	}
 	elapsed := time.Since(execStart)
 	spans.ExecMS = elapsed.Milliseconds()
+
+	// Drain IO: process exit closes the FIFO write ends, but the containerd
+	// goroutines copying from those FIFOs into buf may not have finished yet.
+	// Wait() blocks until they do.
+	taskIO.Wait()
 
 	return &RunResult{
 		Output:     buf.String(),

@@ -8,20 +8,25 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/containerd/containerd"
 )
 
-var ctrClient *containerd.Client
+var (
+	ctrClient     *containerd.Client
+	ctrClientErr  error
+	ctrClientOnce sync.Once
+)
+
+func getContainerdClient() (*containerd.Client, error) {
+	ctrClientOnce.Do(func() {
+		ctrClient, ctrClientErr = containerd.New(containerdSock)
+	})
+	return ctrClient, ctrClientErr
+}
 
 func main() {
-	var err error
-	ctrClient, err = containerd.New(containerdSock)
-	if err != nil {
-		log.Fatalf("connecting to containerd at %s: %v", containerdSock, err)
-	}
-	defer ctrClient.Close()
-
 	token := os.Getenv("RUNNER_TOKEN")
 	if token == "" {
 		log.Fatal("RUNNER_TOKEN environment variable must be set")
