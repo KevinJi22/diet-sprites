@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
@@ -127,11 +128,25 @@ Locations:    nbg1 (Nuremberg), fsn1 (Falkenstein), hel1 (Helsinki), ash (Ashbur
 				}
 				fmt.Println("Writing runner token and starting service...")
 				dropIn := fmt.Sprintf("[Service]\nEnvironment=RUNNER_TOKEN=%s\n", createFlags.runnerToken)
-				writeDropIn := fmt.Sprintf(
-					`mkdir -p /etc/systemd/system/runner.service.d && printf %%s %q > /etc/systemd/system/runner.service.d/token.conf && systemctl daemon-reload && systemctl start runner`,
-					dropIn,
-				)
-				if err := sshRun(ip, createFlags.user, createFlags.identity, writeDropIn); err != nil {
+				f, err := os.CreateTemp("", "runner-token-*.conf")
+				if err != nil {
+					return fmt.Errorf("creating temp drop-in: %w", err)
+				}
+				defer os.Remove(f.Name())
+				if _, err := f.WriteString(dropIn); err != nil {
+					return fmt.Errorf("writing drop-in: %w", err)
+				}
+				f.Close()
+				if err := sshRun(ip, createFlags.user, createFlags.identity,
+					"mkdir -p /etc/systemd/system/runner.service.d"); err != nil {
+					return fmt.Errorf("creating drop-in dir: %w", err)
+				}
+				if err := scpFile(ip, createFlags.user, createFlags.identity, f.Name(),
+					"/etc/systemd/system/runner.service.d/token.conf"); err != nil {
+					return fmt.Errorf("copying runner token: %w", err)
+				}
+				if err := sshRun(ip, createFlags.user, createFlags.identity,
+					"systemctl daemon-reload && systemctl restart runner"); err != nil {
 					return fmt.Errorf("starting runner: %w", err)
 				}
 				fmt.Printf("Runner listening on http://%s:8080\n", ip)
