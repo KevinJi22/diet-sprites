@@ -2,11 +2,9 @@
 
 Ephemeral Hetzner cloud sandbox — spin up isolated code-execution VMs, run untrusted code in gVisor containers, and measure cold-start latency end-to-end.
 
-## Prerequisites
+## Setup
 
-- Go 1.22+
-- A Hetzner API token set in the environment or a `.env` file in the project root
-- An SSH key uploaded to Hetzner (used for `server create` and `server bootstrap`)
+**Prerequisites:** Go 1.22+, a Hetzner API token, and an SSH key uploaded to Hetzner.
 
 ```bash
 go build -o sandbox .
@@ -14,156 +12,105 @@ go build -o sandbox .
 # Either export directly:
 export HETZNER_API_KEY=<your token>
 
-# Or create a .env file (loaded automatically):
+# Or drop into a .env file (loaded automatically):
 echo 'HETZNER_API_KEY=<your token>' > .env
 ```
 
 ---
 
-## Flows
+## Getting started
 
-### 1. Build the golden image (run once)
+### Build the golden image (once)
 
-Creates a Hetzner snapshot with containerd, gVisor, the code runner, and the idle-shutdown daemon pre-installed. Every future `server create` boots from it in ~10s.
+Creates a Hetzner snapshot with containerd, gVisor, the code runner, and the idle-shutdown daemon pre-installed. Every future server boots from it in ~10s instead of going through a full install.
 
 ```bash
 sandbox image build --ssh-key <key-name> --identity ~/.ssh/id_ed25519
 ```
 
-This single command runs all four steps automatically:
-1. Boots a fresh Ubuntu 24.04 server (`setup-box` by default)
-2. Installs containerd, gVisor, pre-pulls language images, code runner, and idle daemon
-3. Powers off the server, snapshots it, and saves it as the default boot image
-4. Deletes the setup server
-
-Optional flags:
+This boots a temporary Ubuntu server, installs everything, snapshots it, and deletes the setup server. Takes a few minutes the first time; saves it ever after.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--name` / `-n` | `setup-box` | Temporary server name |
-| `--type` / `-t` | `cx23` | Hetzner server type |
-| `--location` / `-l` | `nbg1` | Datacenter location |
-| `--arch` | `amd64` | Target architecture (`amd64` or `arm64`) |
-| `--description` / `-d` | `golden-image` | Snapshot description |
+| `--name` | `setup-box` | Temporary server name |
+| `--type` | `cx23` | Hetzner server type |
+| `--location` | `nbg1` | Datacenter location |
+| `--arch` | `amd64` | `amd64` or `arm64` |
+| `--description` | `golden-image` | Snapshot description |
 
-The runner service is installed but not started during bootstrap — it requires a secret token injected per-server at create time (see below).
-
----
-
-### 2. Spin up a runner server
-
-Boot a server from the golden snapshot and start the code-runner HTTP API in one command:
+### Start a runner server
 
 ```bash
 sandbox server create \
   --name my-runner \
   --ssh-key <key-name> \
-  --wait \
   --identity ~/.ssh/id_ed25519 \
-  --runner-token <secret>
+  --runner-token <secret> \
+  --wait
 ```
 
-`--runner-token` writes the token into a systemd drop-in and starts the runner. Once the command returns, the API is live at `http://<ip>:8080`.
-
-The runner token is a secret you choose — any random string. It is not your Hetzner API key. Generate one with:
-
-```bash
-openssl rand -hex 16
-```
+`--runner-token` is a secret you choose (not your Hetzner API key). Generate one with `openssl rand -hex 16`. Once the command returns, the server is up and the runner is live.
 
 ---
 
-### 3. Run code
+## Running code
+
+Run an inline snippet against a running server:
 
 ```bash
-# Health check (no auth required)
-curl http://<ip>:8080/health
-
-# Run a Python snippet
-curl -s -X POST http://<ip>:8080/run \
-  -H "Authorization: Bearer <secret>" \
-  -H "Content-Type: application/json" \
-  -d '{"language":"python","code":"print(\"hello\")"}'
-# → {"output":"hello\n","duration_ms":312}
-
-# Run Node
-curl -s -X POST http://<ip>:8080/run \
-  -H "Authorization: Bearer <secret>" \
-  -H "Content-Type: application/json" \
-  -d '{"language":"node","code":"console.log(\"hello\")"}'
-
-# Run Go
-curl -s -X POST http://<ip>:8080/run \
-  -H "Authorization: Bearer <secret>" \
-  -H "Content-Type: application/json" \
-  -d '{"language":"go","code":"package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hello\")}"}'
+sandbox run --ip <ip> --language python --code 'print("hello")'
+sandbox run --ip <ip> --language node   --code 'console.log("hello")'
+sandbox run --ip <ip> --language go     --code 'package main
+import "fmt"
+func main() { fmt.Println("hello") }'
 ```
 
-**Run code from a file** — use `jq --arg` to safely encode file contents into JSON (handles newlines, quotes, backslashes):
+Run a file directly:
 
 ```bash
-jq -n --arg code "$(cat script.py)" '{"language":"python","code":$code}' | \
-  curl -s -X POST http://<ip>:8080/run \
-    -H "Authorization: Bearer <secret>" \
-    -H "Content-Type: application/json" \
-    -d @-
+sandbox run --ip <ip> --language python --file script.py
+sandbox run --ip <ip> --language python --file examples/longrunning/slow_import.py
 ```
 
-Swap `python` for `node` or `go` as needed.
+`--runner-token` can be omitted if you created the server with `--runner-token` — the token is stored in config and looked up automatically by IP.
 
-Supported languages: `python`, `node`, `go`. Each run is isolated in a gVisor container with 512MB RAM and a 10s CPU timeout.
+Each run is isolated in a gVisor container: 512MB RAM limit, 10s CPU timeout, no network access. Supported languages: `python`, `node`, `go`.
 
 ---
 
-### 4. Benchmark runtimes (runc vs gVisor)
+## Benchmarking
+
+Compare gVisor vs runc overhead across all supported languages:
 
 ```bash
-# 10 iterations per language per runtime
+# 10 iterations per language per runtime, returns a JSON report
 curl -s "http://<ip>:8080/benchmark?n=10" \
   -H "Authorization: Bearer <secret>" | jq .
 ```
 
-Returns min/mean/max/P99 for each language under both `runc` and `gVisor (runsc)`.
+Returns min/mean/max/P99 for each language under both runtimes. Useful for quantifying the syscall-interception overhead gVisor adds vs the security it provides.
 
 ---
 
-### 5. Measure cold-start latency (Phase 3)
+## Tracing latency
 
-`sandbox trace` instruments every stage of a run end-to-end and prints a latency breakdown.
+`sandbox trace` breaks down where time actually goes, stage by stage.
 
-**Hot path** — send runs to an already-running server and get per-stage stats:
+### Hot path — runs against an already-running server
 
 ```bash
-# Single run with span breakdown
-sandbox trace \
-  --ip <ip> \
-  --runner-token <secret> \
-  --language python \
-  --code 'print("hello")'
+# Single run with a full span breakdown
+sandbox trace --ip <ip> --runner-token <secret> --language python --code 'print("hello")'
 
 # 20 runs with P50/P95/P99 per stage
-sandbox trace \
-  --ip <ip> \
-  --runner-token <secret> \
-  --language python \
-  --code 'import time; time.sleep(0.1); print("done")' \
-  --n 20
-```
-
-Example output (single run):
-```
-Stage                     Duration
-────────────────────────────────────
-HTTP round-trip           145ms
-  image_lookup             12ms
-  container_create         45ms
-  task_create              82ms
-  task_start               15ms
-  exec                    234ms
+sandbox trace --ip <ip> --runner-token <secret> --language python \
+  --code 'print("hello")' --n 20
 ```
 
 Example output (20 runs):
 ```
+Completed 20/20 runs (cache hits: 0)
+
 Stage               P50     P95     P99     Min     Max
 ──────────────────────────────────────────────────────────
 HTTP round-trip     145ms   178ms   201ms   132ms   245ms
@@ -174,15 +121,17 @@ HTTP round-trip     145ms   178ms   201ms   132ms   245ms
   exec              234ms   289ms   312ms   220ms   345ms
 ```
 
-**Cold-start path** — create a VM, measure all infrastructure stages, run code, delete the VM:
+Once checkpoint/restore is active, `restore` and `checkpoint` stages appear alongside a cache-hit count.
+
+### Cold-start path — creates a VM, measures all stages, deletes it
 
 ```bash
 sandbox trace \
   --cold-start \
   --name trace-box \
   --ssh-key <key-name> \
-  --runner-token <secret> \
   --identity ~/.ssh/id_ed25519 \
+  --runner-token <secret> \
   --language python \
   --code 'print("hello")'
 ```
@@ -206,15 +155,40 @@ HTTP round-trip             145ms
 Total (cold start)         16.7s
 ```
 
-Add `--keep-server` to skip VM deletion (useful when you want to inspect the server afterwards).
+Add `--keep-server` to skip VM deletion (useful for debugging).
+
+### Testing checkpoint/restore payoff
+
+`examples/longrunning/` has two programs designed to make the before/after measurable:
+
+- **`slow_import.py`** — heavy stdlib imports followed by exit. Cold start is dominated by import time (~150–400ms). Use this to measure cold-start amortization once checkpointing is active.
+- **`long_compute.py`** — quick startup, long iterative loop (stand-in for training/simulation). Use this to test mid-run pause/resume.
+
+```bash
+# Measure cold start cost of the import-heavy program
+sandbox trace --ip <ip> --runner-token <secret> \
+  --language python --file examples/longrunning/slow_import.py --n 20
+```
 
 ---
 
-## idled
+## Managing servers and snapshots
 
-The idle-shutdown daemon (`cmd/idled`) runs on the VM as a systemd service. It monitors CPU usage and network I/O every 30 seconds and calls `poweroff` after 5 consecutive idle minutes (10 × 30s checks below 10% CPU and 50KB/s network). A 2-minute grace period on startup prevents shutdown before work begins.
+```bash
+sandbox server list              # list running servers
+sandbox server delete --name my-runner
 
-`sandbox server bootstrap` installs it. The systemd unit is embedded in the binary at build time so no extra files are needed.
+sandbox snapshot list            # list snapshots, shows which is the default
+sandbox snapshot delete <id>     # clean up old snapshots (Hetzner charges per GB)
+```
+
+---
+
+## idled — auto-shutdown daemon
+
+Every server bootstrapped from the golden image runs `idled`, a daemon that monitors CPU and network I/O every 30 seconds. After 5 consecutive idle minutes (below 10% CPU and 50KB/s network), it calls `poweroff`. A 2-minute grace period prevents early shutdown on fresh boots.
+
+This means servers self-destruct when idle — no runaway billing from forgotten instances.
 
 ---
 
