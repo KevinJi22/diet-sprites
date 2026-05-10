@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/kevin/diet_sprites/internal/config"
+	"sandbox/internal/config"
 	"github.com/spf13/cobra"
 )
 

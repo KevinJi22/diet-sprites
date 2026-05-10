@@ -64,6 +64,17 @@ func sshRun(ip, user, identity, command string) error {
 	return cmd.Run()
 }
 
+// startRunnerWithToken writes a systemd drop-in containing RUNNER_TOKEN and
+// restarts the runner service. Uses a single SSH command to avoid extra round trips.
+// reset-failed clears any start-limit state accumulated from token-less boot crashes.
+func startRunnerWithToken(ip, user, identity, token string) error {
+	cmd := fmt.Sprintf(
+		`mkdir -p /etc/systemd/system/runner.service.d && printf '[Service]\nEnvironment=RUNNER_TOKEN=%%s\n' %q > /etc/systemd/system/runner.service.d/token.conf && systemctl daemon-reload && systemctl reset-failed runner && systemctl restart runner`,
+		token,
+	)
+	return sshRun(ip, user, identity, cmd)
+}
+
 func scpFile(ip, user, identity, src, dst string) error {
 	cmd := exec.Command("scp",
 		"-i", identity,

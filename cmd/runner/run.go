@@ -39,22 +39,22 @@ func (s *safeBuffer) String() string {
 }
 
 const (
-	setupTimeout    = 60 * time.Second
-	execTimeout     = 10 * time.Second
-	maxCodeBytes    = 64 * 1024
-	memoryLimit     = uint64(512 * 1024 * 1024)
-	cpuQuota        = int64(100_000)  // microseconds of CPU per period
-	cpuPeriod       = uint64(100_000) // 100ms window — quota/period = fraction of 1 CPU
+	setupTimeout = 60 * time.Second
+	execTimeout  = 10 * time.Second
+	maxCodeBytes = 64 * 1024
+	memoryLimit  = uint64(512 * 1024 * 1024)
+	cpuQuota     = int64(100_000)  // microseconds of CPU per period
+	cpuPeriod    = uint64(100_000) // 100ms window — quota/period = fraction of 1 CPU
 	// Internal labels — resolved to (containerd runtime, shim options) by
 	// resolveRuntime. Both labels currently map to the runc.v2 shim; gVisor is
 	// selected by passing the runsc binary path through the shim's options.
 	// The native io.containerd.runsc.v1 shim deadlocks against containerd 2.x
 	// (TTRPC API drift), so we route through the runc shim which containerd is
 	// built and tested against.
-	gvisorRuntime = "gvisor"
-	runcRuntime   = "runc"
-	runscBinary   = "/usr/bin/runsc"
-	shimRuntime   = "io.containerd.runc.v2"
+	gvisorRuntime   = "gvisor"
+	runcRuntime     = "runc"
+	runscBinary     = "/usr/bin/runsc"
+	shimRuntime     = "io.containerd.runc.v2"
 	benchmarkWarmup = 2
 	containerdSock  = "/run/containerd/containerd.sock"
 	ctrNamespace    = "runner"
@@ -137,18 +137,6 @@ func execute(ctx context.Context, req RunRequest, runtime string) (*RunResult, e
 	defer setupCancel()
 	setupCtx = namespaces.WithNamespace(setupCtx, ctrNamespace)
 
-	// TODO(human): Add per-stage timing here. Fill in a *Spans and return it with the result.
-	//
-	// The five stages to measure (record time.Now() before and after each call):
-	//   image_lookup_ms     — ctrClient.GetImage(...)
-	//   container_create_ms — ctrClient.NewContainer(...)
-	//   task_create_ms      — container.NewTask(...)
-	//   task_start_ms       — task.Start(ctx) call only (not the exec wait)
-	//   exec_ms             — task.Start(ctx) through exit (already in elapsed below — split it out)
-	//
-	// Hint: the simplest approach is t0 := time.Now() before each call, then
-	// ms := time.Since(t0).Milliseconds() after it. Reset t0 between stages.
-	// Decide what to do when a stage errors — partial spans or nil?
 	var spans = &Spans{}
 
 	ctrClient, err := getContainerdClient()

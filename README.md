@@ -27,18 +27,24 @@ echo 'HETZNER_API_KEY=<your token>' > .env
 Creates a Hetzner snapshot with containerd, gVisor, the code runner, and the idle-shutdown daemon pre-installed. Every future `server create` boots from it in ~10s.
 
 ```bash
-# Boot a fresh Ubuntu server
-sandbox server create --name setup-box --image ubuntu-24.04 --ssh-key <key-name> --wait
-
-# Install containerd, gVisor, pre-pull language images, code runner, and idle daemon
-sandbox server bootstrap setup-box --identity ~/.ssh/id_ed25519
-
-# Snapshot the configured server and mark it as the default boot image
-sandbox snapshot create setup-box --power-off --set-default
-
-# Delete the setup server
-sandbox server delete setup-box
+sandbox image build --ssh-key <key-name> --identity ~/.ssh/id_ed25519
 ```
+
+This single command runs all four steps automatically:
+1. Boots a fresh Ubuntu 24.04 server (`setup-box` by default)
+2. Installs containerd, gVisor, pre-pulls language images, code runner, and idle daemon
+3. Powers off the server, snapshots it, and saves it as the default boot image
+4. Deletes the setup server
+
+Optional flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` / `-n` | `setup-box` | Temporary server name |
+| `--type` / `-t` | `cx23` | Hetzner server type |
+| `--location` / `-l` | `nbg1` | Datacenter location |
+| `--arch` | `amd64` | Target architecture (`amd64` or `arm64`) |
+| `--description` / `-d` | `golden-image` | Snapshot description |
 
 The runner service is installed but not started during bootstrap — it requires a secret token injected per-server at create time (see below).
 
@@ -92,6 +98,18 @@ curl -s -X POST http://<ip>:8080/run \
   -H "Content-Type: application/json" \
   -d '{"language":"go","code":"package main\nimport \"fmt\"\nfunc main(){fmt.Println(\"hello\")}"}'
 ```
+
+**Run code from a file** — use `jq --arg` to safely encode file contents into JSON (handles newlines, quotes, backslashes):
+
+```bash
+jq -n --arg code "$(cat script.py)" '{"language":"python","code":$code}' | \
+  curl -s -X POST http://<ip>:8080/run \
+    -H "Authorization: Bearer <secret>" \
+    -H "Content-Type: application/json" \
+    -d @-
+```
+
+Swap `python` for `node` or `go` as needed.
 
 Supported languages: `python`, `node`, `go`. Each run is isolated in a gVisor container with 512MB RAM and a 10s CPU timeout.
 

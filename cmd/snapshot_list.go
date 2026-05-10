@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
-	"github.com/kevin/diet_sprites/internal/config"
+	"sandbox/internal/config"
 	"github.com/spf13/cobra"
 )
 

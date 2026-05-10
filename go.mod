@@ -1,4 +1,4 @@
-module github.com/kevin/diet_sprites
+module sandbox
 
 go 1.24.2
 

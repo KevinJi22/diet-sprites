@@ -1,6 +1,6 @@
 package main
 
-import "github.com/kevin/diet_sprites/cmd"
+import "sandbox/cmd"
 
 func main() {
 	cmd.Execute()

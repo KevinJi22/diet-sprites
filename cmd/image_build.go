@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
-	"github.com/kevin/diet_sprites/internal/config"
-	"github.com/kevin/diet_sprites/internal/sshprobe"
+	"sandbox/internal/config"
+	"sandbox/internal/sshprobe"
 	"github.com/spf13/cobra"
 )
 

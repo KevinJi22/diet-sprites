@@ -31,9 +31,9 @@ func DefaultConfig(host string) Config {
 	return Config{
 		Host:           host,
 		Port:           22,
-		InitialBackoff: 1 * time.Second,
-		MaxBackoff:     30 * time.Second,
-		MaxAttempts:    20,
+		InitialBackoff: 500 * time.Millisecond,
+		MaxBackoff:     2 * time.Second,
+		MaxAttempts:    120,
 		DialTimeout:    5 * time.Second,
 	}
 }

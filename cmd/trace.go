@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
-	"github.com/kevin/diet_sprites/internal/config"
-	"github.com/kevin/diet_sprites/internal/sshprobe"
+	"sandbox/internal/config"
+	"sandbox/internal/sshprobe"
 	"github.com/spf13/cobra"
 )
 
@@ -156,17 +156,16 @@ func runColdStartTrace(ctx context.Context) error {
 	tSSHReady := time.Since(epoch)
 
 	fmt.Println("Starting runner...")
-	dropIn := fmt.Sprintf("[Service]\nEnvironment=RUNNER_TOKEN=%s\n", traceFlagVars.token)
-	startRunner := fmt.Sprintf(
-		`mkdir -p /etc/systemd/system/runner.service.d && printf %%s %q > /etc/systemd/system/runner.service.d/token.conf && systemctl daemon-reload && systemctl start runner`,
-		dropIn,
-	)
-	if err := sshRun(ip, traceFlagVars.user, traceFlagVars.identity, startRunner); err != nil {
+	if err := startRunnerWithToken(ip, traceFlagVars.user, traceFlagVars.identity, traceFlagVars.token); err != nil {
 		return fmt.Errorf("starting runner: %w", err)
 	}
 
 	fmt.Println("Waiting for runner health check...")
 	if err := waitForHealth(ctx, ip); err != nil {
+		fmt.Println("\n--- runner diagnostics ---")
+		_ = sshRun(ip, traceFlagVars.user, traceFlagVars.identity,
+			"systemctl status runner --no-pager; echo '---'; journalctl -u runner --no-pager -n 30")
+		fmt.Println("--- end diagnostics ---")
 		return fmt.Errorf("runner health: %w", err)
 	}
 	tRunnerReady := time.Since(epoch)
@@ -301,7 +300,7 @@ func printColdStartTable(apiCall, vmBoot, sshReady, runnerStart, httpRT, total t
 		fmt.Printf("  %-*s  %s\n", colWidth-2, "task_start", fmtMS(result.Spans.TaskStartMS))
 		fmt.Printf("  %-*s  %s\n", colWidth-2, "exec", fmtMS(result.Spans.ExecMS))
 	} else {
-		fmt.Printf("  (no spans — implement TODO(human) in execute() to see breakdown)\n")
+		fmt.Printf("  (no spans)\n")
 	}
 	fmt.Println(sep)
 	fmt.Printf("%-*s  %s\n", colWidth, "Total (cold start)", fmtDur(total))

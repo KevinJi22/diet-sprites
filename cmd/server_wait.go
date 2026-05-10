@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kevin/diet_sprites/internal/sshprobe"
+	"sandbox/internal/sshprobe"
 	"github.com/spf13/cobra"
 )
 

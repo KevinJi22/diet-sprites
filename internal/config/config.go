@@ -7,8 +7,20 @@ import (
 	"path/filepath"
 )
 
+type RunnerConfig struct {
+	Token string `json:"token"`
+}
+
 type Config struct {
-	DefaultSnapshotID int64 `json:"default_snapshot_id,omitempty"`
+	DefaultSnapshotID int64                    `json:"default_snapshot_id,omitempty"`
+	Runners           map[string]*RunnerConfig `json:"runners,omitempty"`
+}
+
+func (c *Config) SetRunner(ip, token string) {
+	if c.Runners == nil {
+		c.Runners = make(map[string]*RunnerConfig)
+	}
+	c.Runners[ip] = &RunnerConfig{Token: token}
 }
 
 func configPath() (string, error) {
